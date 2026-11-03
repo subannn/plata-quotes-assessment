@@ -1,5 +1,8 @@
 # FX Quotes Service
 
+Тестовое задание Plata — Go Engineer. ТЗ: [docs/PlataAssignment.MD](docs/PlataAssignment.MD).
+Автор — Suban I.
+
 Сервис котировок валютных курсов с асинхронным API. Клиент создаёт заявку на обновление котировки и сразу получает её идентификатор; курс у [exchangeratesapi.io](https://exchangeratesapi.io/) запрашивает фоновый воркер. Результат клиент забирает по идентификатору заявки или как последний известный курс пары.
 
 Валюты: `USD`, `EUR`, `MXN`. Устройство сервиса — [docs/DESIGN.md](docs/DESIGN.md).
@@ -8,9 +11,11 @@
 
 ## Запуск
 
+> **Ключ провайдера.** В `config.json` и `config.docker.json` уже указан рабочий `exchange_rates.access_key` (бесплатный тариф exchangeratesapi.io). На нём работает только базовая валюта `EUR`: заявки `EUR/USD` и `EUR/MXN` обрабатываются, а с базой `USD` или `MXN` провайдер отвечает ошибкой, и такие заявки уходят в `failed`. Для других базовых валют нужен ключ платного тарифа.
+
 ### Docker Compose
 
-Сервис и PostgreSQL одной командой. В `config.docker.json` указать `exchange_rates.access_key` (ключ exchangeratesapi.io) и `http.api_key` (ключ для клиентов API), затем:
+Сервис и PostgreSQL одной командой. Конфиг — `config.docker.json` (ключ провайдера уже указан, `http.api_key` — ключ для клиентов API):
 
 ```sh
 docker compose up --build
@@ -36,7 +41,7 @@ docker compose up --build
    docker exec -i quotes-pg psql -U postgres -d quotes < migration/init.up.sql
    ```
 
-3. В `config.json` указать `exchange_rates.access_key` и `http.api_key`.
+3. Конфиг — `config.json` (ключ провайдера уже указан, при необходимости заменить `http.api_key`).
 
 4. Запустить:
 
@@ -71,6 +76,11 @@ go test -tags fun ./cmd/service -v
 Все запросы требуют заголовок `X-API-Key`. Цена передаётся строкой, чтобы не терять точность.
 
 В примерах — порт локального запуска `8080`; при запуске через Docker Compose — `8085`.
+
+Ручки удобно проверять прямо по спеке `api/openapi.yaml`:
+
+- **GoLand / IntelliJ** — открыть файл, в превью Swagger UI выбрать сервер (`8085` — Docker Compose, `8080` — локальный запуск), в **Authorize** указать `X-API-Key` из конфига (`change-me`) и вызывать ручки через **Try it out**.
+- **Postman** — *Import* → `api/openapi.yaml`.
 
 ### Создать заявку
 
