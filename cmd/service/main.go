@@ -62,6 +62,9 @@ func run(configPath string, log *slog.Logger) error {
 		Addr:              cfg.HTTP.Addr,
 		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       5 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 
 	worker := implementations.NewWorker(db, provider, implementations.WorkerConfig{

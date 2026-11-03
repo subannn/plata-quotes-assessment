@@ -4,7 +4,7 @@
     "api_key": "change-me"
   },
   "database": {
-    "url": "postgres://postgres:postgres@localhost:5432/quotes?sslmode=disable"
+    "url": "postgres://postgres:postgres@localhost:5435/quotes?sslmode=disable"
   },
   "exchange_rates": {
     "url": "https://api.exchangeratesapi.io/v1",

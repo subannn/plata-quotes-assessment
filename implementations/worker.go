@@ -2,6 +2,7 @@ package implementations
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"maps"
 	"slices"
@@ -12,6 +13,10 @@ import (
 	"plata-quotes-assessment/internal/database"
 	"plata-quotes-assessment/internal/exchangerates"
 )
+
+// errInternal — причина для клиента при внутренней ошибке (БД и т.п.).
+// Подробности — только в логе, как в NewError.
+var errInternal = errors.New("internal error")
 
 var (
 	_ RateProvider = (*exchangerates.Client)(nil)
@@ -126,7 +131,7 @@ func (w *Worker) processGroup(ctx context.Context, base string, byQuote map[stri
 
 	if err := w.store.CompleteQuoteUpdates(ctx, results); err != nil {
 		log.Error("complete quote updates", "error", err)
-		w.fail(ctx, log, ids, err)
+		w.fail(ctx, log, ids, errInternal)
 		return
 	}
 
@@ -160,7 +165,7 @@ func (w *Worker) completeFromCache(ctx context.Context, base string, byQuote map
 		log := w.log.With("base", base, "quote", quote, "updates", len(ids), "rate_id", rateID)
 		if err := w.store.CompleteQuoteUpdatesWithRate(ctx, rateID, ids); err != nil {
 			log.Error("complete quote updates from cache", "error", err)
-			w.fail(ctx, log, ids, err)
+			w.fail(ctx, log, ids, errInternal)
 			continue
 		}
 		log.Info("quote updates done from cache")

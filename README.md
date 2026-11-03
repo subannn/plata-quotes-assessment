@@ -18,6 +18,8 @@ docker compose up --build
 
 Сервис — на `localhost:8085`. Конфиг монтируется в контейнер, в образ не входит.
 
+База хранится внутри контейнера PostgreSQL: переживает `docker compose stop`/`start`, но удаляется при `docker compose down`. Схему БД (`migration/init.up.sql`) PostgreSQL применяет при создании новой базы. Сам сервис схему не применяет.
+
 ### Локально
 
 1. Поднять PostgreSQL:
@@ -25,22 +27,50 @@ docker compose up --build
    ```sh
    docker run -d --name quotes-pg \
      -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=quotes \
-     -p 5432:5432 postgres:17
+     -p 5435:5432 postgres:17
    ```
 
-2. В `config.json` указать `exchange_rates.access_key` и `http.api_key`.
+2. Применить схему БД (сервис сам её не применяет):
 
-3. Запустить:
+   ```sh
+   docker exec -i quotes-pg psql -U postgres -d quotes < migration/init.up.sql
+   ```
+
+3. В `config.json` указать `exchange_rates.access_key` и `http.api_key`.
+
+4. Запустить:
 
    ```sh
    go run ./cmd/service -config config.json
    ```
 
-Схема БД применяется при старте. Сборка бинарника — `go build -o bin/quotes-service ./cmd/service`, тесты — `go test ./...`.
+Сборка бинарника — `go build -o bin/quotes-service ./cmd/service`.
+
+## Тесты
+
+Unit-тесты:
+
+```sh
+go test ./...
+```
+
+Интеграционные тесты вызывают `Service` с настоящими PostgreSQL и воркером; настройки берутся из `config.json`. Нужна база со схемой — проще всего Postgres из compose (порт `5435`); сервис из compose на время тестов остановить, иначе его воркер заберёт заявки тестов:
+
+```sh
+docker compose up -d postgres
+
+# Сценарии с фейковым провайдером курсов
+go test -tags integration ./cmd/test -v
+
+# Создание заявки и получение курса с настоящим провайдером (запускать отдельно)
+go test -tags fun ./cmd/service -v
+```
 
 ## API
 
 Все запросы требуют заголовок `X-API-Key`. Цена передаётся строкой, чтобы не терять точность.
+
+В примерах — порт локального запуска `8080`; при запуске через Docker Compose — `8085`.
 
 ### Создать заявку
 
@@ -109,18 +139,32 @@ curl 'http://localhost:8080/quotes/latest?base=EUR&quote=MXN' \
 
 JSON-файл, путь — флаг `-config` (по умолчанию `config.json`). Неизвестные поля и пустые обязательные значения — ошибка при старте.
 
-| Поле | Описание |
-|---|---|
-| `http.addr` | Адрес HTTP-сервера, напр. `:8080`. |
-| `http.api_key` | Ключ для заголовка `X-API-Key`. |
-| `database.url` | DSN PostgreSQL. |
-| `exchange_rates.url` | URL провайдера; необязательное, по умолчанию `https://api.exchangeratesapi.io/v1`. |
-| `exchange_rates.access_key` | Ключ exchangeratesapi.io. |
-| `worker.batch_size` | Сколько заявок воркер забирает за раз. |
-| `worker.poll_interval` | Как часто воркер проверяет очередь, напр. `1s`. |
-| `worker.max_attempts` | Сколько раз пробовать заявку, прежде чем перевести в `failed`. |
-| `worker.lock_timeout` | Через сколько заявка в `processing` считается брошенной и возвращается в очередь, напр. `1m`. |
-| `worker.rate_ttl` | Сколько курс от провайдера считается свежим и переиспользуется без запроса, напр. `1m`; необязательное, `0s` — без кеша. |
+Пример (`config.json`; комментарии здесь только для пояснения — в настоящем файле их быть не должно):
+
+```jsonc
+{
+  "http": {
+    "addr": ":8080",                    // адрес HTTP-сервера
+    "api_key": "change-me"              // ключ для заголовка X-API-Key
+  },
+  "database": {
+    "url": "postgres://postgres:postgres@localhost:5435/quotes?sslmode=disable" // DSN PostgreSQL
+  },
+  "exchange_rates": {
+    "url": "https://api.exchangeratesapi.io/v1", // URL провайдера; необязательное, это значение по умолчанию
+    "access_key": "change-me"           // ключ exchangeratesapi.io
+  },
+  "worker": {
+    "batch_size": 100,                  // сколько заявок воркер забирает за раз
+    "poll_interval": "1s",              // как часто воркер проверяет очередь
+    "max_attempts": 3,                  // сколько раз пробовать заявку, прежде чем перевести в failed
+    "lock_timeout": "1m",               // через сколько заявка в processing считается брошенной и возвращается в очередь
+    "rate_ttl": "1m"                    // сколько курс от провайдера переиспользуется без запроса; необязательное, "0s" — без кеша
+  }
+}
+```
+
+Длительности — строки в формате Go: `"500ms"`, `"1s"`, `"1m"`.
 
 Как подбирать параметры воркера — в [docs/DESIGN.md](docs/DESIGN.md#конфигурация).
 

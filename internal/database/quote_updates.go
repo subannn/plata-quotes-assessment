@@ -2,6 +2,7 @@ package database
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -10,6 +11,21 @@ import (
 	"github.com/shopspring/decimal"
 )
 
+// QuoteUpdate — заявка на обновление котировки вместе с полученным курсом.
+type QuoteUpdate struct {
+	ID     uuid.UUID
+	Base   string
+	Quote  string
+	Status string
+
+	// Price и RateUpdatedAt заданы, когда к заявке привязан курс (status = done).
+	Price         *decimal.Decimal
+	RateUpdatedAt *time.Time
+
+	// Error задан при status = failed.
+	Error *string
+}
+
 // ClaimedQuoteUpdate — заявка, которую воркер забрал в обработку.
 type ClaimedQuoteUpdate struct {
 	ID    uuid.UUID
@@ -17,13 +33,79 @@ type ClaimedQuoteUpdate struct {
 	Quote string
 }
 
-// RateResult — полученный курс и заявки, которые им закрываются.
-type RateResult struct {
-	Base      string
-	Quote     string
-	Price     decimal.Decimal
-	UpdatedAt time.Time // время курса у провайдера
-	UpdateIDs []uuid.UUID
+// InsertQuoteUpdate создаёт заявку на обновление котировки base/quote в статусе
+// pending и возвращает её id.
+//
+// Если заявка с таким idempotencyKey уже есть, новая не создаётся:
+// для той же пары возвращается id существующей заявки, для другой пары —
+// ErrIdempotencyConflict.
+func (db *DB) InsertQuoteUpdate(ctx context.Context, base, quote string, idempotencyKey uuid.UUID) (uuid.UUID, error) {
+	const insert = `
+		INSERT INTO quote_updates (base, quote, idempotency_key)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (idempotency_key) DO NOTHING
+		RETURNING id`
+
+	// Отдельным запросом, а не в том же INSERT: при одновременной вставке
+	// с тем же ключом INSERT дожидается коммита чужой заявки, и только новый
+	// запрос (с новым снимком данных) её увидит.
+	const selectExisting = `
+		SELECT id, base, quote
+		FROM quote_updates
+		WHERE idempotency_key = $1`
+
+	var id uuid.UUID
+	err := db.pool.QueryRow(ctx, insert, base, quote, idempotencyKey).Scan(&id)
+	if err == nil {
+		return id, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return uuid.Nil, fmt.Errorf("insert quote update: %w", err)
+	}
+
+	// Конфликт по ключу — заявка уже создана.
+	var existingBase, existingQuote string
+	err = db.pool.QueryRow(ctx, selectExisting, idempotencyKey).Scan(&id, &existingBase, &existingQuote)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("insert quote update: get existing by idempotency key: %w", err)
+	}
+
+	if existingBase != base || existingQuote != quote {
+		return uuid.Nil, fmt.Errorf("%w: key %s is used for %s/%s", ErrIdempotencyConflict, idempotencyKey, existingBase, existingQuote)
+	}
+
+	return id, nil
+}
+
+// GetQuoteUpdate возвращает заявку по id. Если заявки нет — ErrNotFound.
+func (db *DB) GetQuoteUpdate(ctx context.Context, id uuid.UUID) (QuoteUpdate, error) {
+	const q = `
+		SELECT u.id, u.base, u.quote, u.status, u.error, r.price::text, r.rate_updated_at
+		FROM quote_updates u
+		LEFT JOIN rates r ON r.id = u.rate_id
+		WHERE u.id = $1`
+
+	var (
+		u     QuoteUpdate
+		price *string
+	)
+	err := db.pool.QueryRow(ctx, q, id).Scan(&u.ID, &u.Base, &u.Quote, &u.Status, &u.Error, &price, &u.RateUpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return QuoteUpdate{}, ErrNotFound
+	}
+	if err != nil {
+		return QuoteUpdate{}, fmt.Errorf("get quote update: %w", err)
+	}
+
+	if price != nil {
+		d, err := decimal.NewFromString(*price)
+		if err != nil {
+			return QuoteUpdate{}, fmt.Errorf("get quote update: parse price %q: %w", *price, err)
+		}
+		u.Price = &d
+	}
+
+	return u, nil
 }
 
 // ClaimPendingQuoteUpdates берёт в работу до limit заявок в статусе pending,
@@ -68,69 +150,6 @@ const completeUpdatesQuery = `
 	UPDATE quote_updates
 	SET status = 'done', rate_id = $1, error = NULL, locked_at = NULL, updated_at = now()
 	WHERE id = ANY($2::uuid[]) AND status = 'processing'`
-
-// CompleteQuoteUpdates в одной транзакции сохраняет полученные от провайдера
-// курсы и переводит связанные с ними заявки в done. Если курс уже есть,
-// у него обновляется fetched_at: провайдер только что его подтвердил.
-func (db *DB) CompleteQuoteUpdates(ctx context.Context, results []RateResult) error {
-	const insertRate = `
-		INSERT INTO rates (base, quote, price, rate_updated_at)
-		VALUES ($1, $2, $3::numeric, $4)
-		ON CONFLICT (base, quote, rate_updated_at)
-		DO UPDATE SET price = EXCLUDED.price, fetched_at = now()
-		RETURNING id`
-
-	return pgx.BeginFunc(ctx, db.pool, func(tx pgx.Tx) error {
-		for _, r := range results {
-			var rateID int64
-			err := tx.QueryRow(ctx, insertRate, r.Base, r.Quote, r.Price.String(), r.UpdatedAt).Scan(&rateID)
-			if err != nil {
-				return fmt.Errorf("complete quote updates: insert rate %s/%s: %w", r.Base, r.Quote, err)
-			}
-
-			if _, err := tx.Exec(ctx, completeUpdatesQuery, rateID, uuidStrings(r.UpdateIDs)); err != nil {
-				return fmt.Errorf("complete quote updates: %s/%s: %w", r.Base, r.Quote, err)
-			}
-		}
-		return nil
-	})
-}
-
-// GetFreshRateIDs возвращает id свежих курсов base к quotes: тех, что провайдер
-// вернул не раньше ttl назад (по fetched_at). Если таких курсов по паре
-// несколько, берётся самый новый по времени курса у провайдера. Quote без
-// свежего курса в ответе нет.
-func (db *DB) GetFreshRateIDs(ctx context.Context, base string, quotes []string, ttl time.Duration) (map[string]int64, error) {
-	const q = `
-		SELECT DISTINCT ON (quote) quote, id
-		FROM rates
-		WHERE base = $1 AND quote = ANY($2::bpchar[])
-		  AND fetched_at > now() - make_interval(secs => $3)
-		ORDER BY quote, rate_updated_at DESC`
-
-	rows, err := db.pool.Query(ctx, q, base, quotes, ttl.Seconds())
-	if err != nil {
-		return nil, fmt.Errorf("get fresh rates: %w", err)
-	}
-	defer rows.Close()
-
-	ids := make(map[string]int64)
-	for rows.Next() {
-		var (
-			quote string
-			id    int64
-		)
-		if err := rows.Scan(&quote, &id); err != nil {
-			return nil, fmt.Errorf("get fresh rates: %w", err)
-		}
-		ids[quote] = id
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("get fresh rates: %w", err)
-	}
-
-	return ids, nil
-}
 
 // CompleteQuoteUpdatesWithRate переводит заявки в done с уже сохранённым
 // курсом rateID. Сам курс не трогает: fetched_at обновляет только ответ
@@ -180,12 +199,4 @@ func (db *DB) ReleaseStuckQuoteUpdates(ctx context.Context, lockTimeout time.Dur
 	}
 
 	return tag.RowsAffected(), nil
-}
-
-func uuidStrings(ids []uuid.UUID) []string {
-	s := make([]string, len(ids))
-	for i, id := range ids {
-		s[i] = id.String()
-	}
-	return s
 }

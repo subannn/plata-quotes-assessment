@@ -5,11 +5,13 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: quotes
+      # База хранится внутри контейнера (вне VOLUME образа): переживает stop/start,
+      # удаляется вместе с контейнером при docker compose down.
+      PGDATA: /var/lib/postgresql-data
     ports:
       - "5435:5432"
     volumes:
-      - pgdata:/var/lib/postgresql/data
-      # Схема БД. Postgres применяет её один раз — при инициализации пустого тома pgdata.
+      # Схема БД. Postgres применяет её при создании новой базы — в новом контейнере.
       - ./migration/init.up.sql:/docker-entrypoint-initdb.d/init.up.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d quotes"]
@@ -26,9 +28,4 @@ services:
       - "8085:8080"
     volumes:
       - ./config.docker.json:/app/config.json:ro
-#     Сервер дожидается текущих запросов (до 10 с), воркер доделывает пачку.
-    stop_grace_period: 30s
     restart: unless-stopped
-
-volumes:
-  pgdata:
