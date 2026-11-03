@@ -1,0 +1,14 @@
+# IDE
+.idea/
+.vscode/
+
+# macOS
+.DS_Store
+
+# Сборка и тесты
+bin/
+*.test
+*.out
+
+# Локальные переменные окружения
+.env

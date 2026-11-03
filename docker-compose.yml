@@ -1,0 +1,34 @@
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: quotes
+    ports:
+      - "5435:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Схема БД. Postgres применяет её один раз — при инициализации пустого тома pgdata.
+      - ./migration/init.up.sql:/docker-entrypoint-initdb.d/init.up.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d quotes"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  service:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8085:8080"
+    volumes:
+      - ./config.docker.json:/app/config.json:ro
+#     Сервер дожидается текущих запросов (до 10 с), воркер доделывает пачку.
+    stop_grace_period: 30s
+    restart: unless-stopped
+
+volumes:
+  pgdata:

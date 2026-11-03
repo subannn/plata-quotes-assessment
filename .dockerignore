@@ -1,0 +1,9 @@
+.idea
+.git
+bin
+docs
+*.md
+# Конфиги с ключами в образ не попадают — монтируются при запуске.
+config*.json
+docker-compose.yml
+Dockerfile

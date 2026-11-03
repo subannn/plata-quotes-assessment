@@ -1,0 +1,199 @@
+openapi: 3.0.3
+info:
+  title: FX Quotes Service
+  version: 1.0.0
+  description: Асинхронный сервис котировок валютных курсов.
+
+servers:
+  - url: http://localhost:8085
+    description: Docker Compose
+  - url: http://localhost:8080
+    description: Локальный запуск (go run)
+
+security:
+  - ApiKeyAuth: []
+
+paths:
+  /quotes/updates:
+    post:
+      operationId: createQuoteUpdate
+      summary: Создать заявку на обновление котировки
+      description: |
+        Сохраняет заявку и сразу возвращает её идентификатор.
+        Обновление выполняется в фоне. Повторный запрос с тем же
+        Idempotency-Key возвращает уже созданную заявку.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateUpdateRequest'
+      responses:
+        '202':
+          description: Заявка принята
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateUpdateResponse'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /quotes/updates/{id}:
+    get:
+      operationId: getQuoteUpdate
+      summary: Получить котировку по идентификатору обновления
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Состояние заявки
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QuoteUpdate'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /quotes/latest:
+    get:
+      operationId: getLatestQuote
+      summary: Получить последнее значение котировки
+      description: |
+        Возвращает последнюю известную котировку по паре.
+        С параметром at — последнюю котировку на указанный момент или раньше.
+      parameters:
+        - name: base
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/Currency'
+        - name: quote
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/Currency'
+        - name: at
+          in: query
+          required: false
+          description: Момент времени для исторического курса (RFC 3339)
+          schema:
+            type: string
+            format: date-time
+      responses:
+        '200':
+          description: Котировка
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Quote'
+        default:
+          $ref: '#/components/responses/Error'
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+
+  schemas:
+    Currency:
+      type: string
+      description: Код валюты по ISO 4217
+      enum: [USD, EUR, MXN]
+
+    CreateUpdateRequest:
+      type: object
+      required: [base, quote]
+      properties:
+        base:
+          $ref: '#/components/schemas/Currency'
+        quote:
+          $ref: '#/components/schemas/Currency'
+
+    CreateUpdateResponse:
+      type: object
+      required: [update_id]
+      properties:
+        update_id:
+          type: string
+          format: uuid
+
+    UpdateStatus:
+      type: string
+      enum: [pending, processing, done, failed]
+
+    QuoteUpdate:
+      type: object
+      required: [update_id, base, quote, status]
+      properties:
+        update_id:
+          type: string
+          format: uuid
+        base:
+          $ref: '#/components/schemas/Currency'
+        quote:
+          $ref: '#/components/schemas/Currency'
+        status:
+          $ref: '#/components/schemas/UpdateStatus'
+        price:
+          type: string
+          description: Цена строкой, чтобы не терять точность. Есть при статусе done.
+          example: "20.4512"
+        updated_at:
+          type: string
+          format: date-time
+          description: Время курса у провайдера. Есть при статусе done.
+        error:
+          type: string
+          description: Причина ошибки. Есть при статусе failed.
+
+    Quote:
+      type: object
+      required: [base, quote, price, updated_at]
+      properties:
+        base:
+          $ref: '#/components/schemas/Currency'
+        quote:
+          $ref: '#/components/schemas/Currency'
+        price:
+          type: string
+          example: "20.4512"
+        updated_at:
+          type: string
+          format: date-time
+          description: Время курса у провайдера
+
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          example: not_found
+        message:
+          type: string
+
+  responses:
+    Error:
+      description: |
+        Ошибка с телом Error (400, 401, 404, 409, 500).
+        Исключение — ошибки разбора запроса (нет Idempotency-Key, неизвестная
+        валюта, некорректный UUID или JSON): их формирует сгенерированный
+        сервер, ответ 400 с телом {"error_message": "..."}.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'

@@ -1,0 +1,20 @@
+{
+  "http": {
+    "addr": ":8080",
+    "api_key": "change-me"
+  },
+  "database": {
+    "url": "postgres://postgres:postgres@localhost:5432/quotes?sslmode=disable"
+  },
+  "exchange_rates": {
+    "url": "https://api.exchangeratesapi.io/v1",
+    "access_key": "9d3720bb24d82a0b70eff3d510522f48"
+  },
+  "worker": {
+    "batch_size": 100,
+    "poll_interval": "1s",
+    "max_attempts": 3,
+    "lock_timeout": "1m",
+    "rate_ttl": "1m"
+  }
+}
